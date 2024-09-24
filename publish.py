@@ -66,7 +66,7 @@ export const ADDRESSES = {{
     print(f"{addresses_ts_path} created successfully.")
 
     # Path to copy the addresses.ts file to the frontend directory
-    destination_path = '/Users/yusufanilyazici/Documents/SuiCity/14september2024/frontend/addresses.ts'
+    destination_path = '/Users/yusufanilyazici/SuiCity-Test3/addresses.ts'
 
     # Copying the file to the specified destination
     shutil.copyfile(addresses_ts_path, destination_path)

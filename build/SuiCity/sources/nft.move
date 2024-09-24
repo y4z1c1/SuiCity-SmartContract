@@ -19,10 +19,14 @@ module suicity::nft {
     const EWrongVersion: u64 = 2;
     const EAlreadyMinted: u64 = 3;
     const EInsufficientBalance: u64 = 4;
-    const EInvalidBuildingType: u64 = 5;
+    const EInvalidSignature: u64 = 5;
     const EInvalidTokenType: u64 = 6;
     const EZeroBalance : u64 = 7;
     const ENotEnoughTime : u64 = 8;
+    const ENotEligibleForRef : u64 = 9;
+    const ERefAlreadyUsed : u64 = 10;
+    const EInsufficientPool : u64 = 11;
+    const EAmountShouldBePositive : u64 = 12;
 
   // === Constants ===
     const VERSION: u64 = 1;
@@ -32,29 +36,17 @@ module suicity::nft {
 
     public struct City has key  {
         id: UID,
-        /// Name for the token
+
+        index: u64,
         name: string::String,
-        /// Description of the token
         description: string::String,
-        /// URL for the token
         url: Url,
-
         balance: Balance<SITY>,
-
-        // buildings
-        buildings: vector<u64>,  // Building levels stored in a vector
-
-
-        /// Timestamp of the last SITY claim
+        buildings: vector<u64>,  
         last_claimed: u64,
-
-        /// Timestamp of the last SITY claim
         last_daily_bonus: u64,
-
         last_accumulated: u64,
-    
         population: u64,
-
         ref_used : bool,
     }
 
@@ -63,22 +55,24 @@ module suicity::nft {
         version: u64,
         minted: u64,
         speed: u64,  
-        cost_multiplier: u64,                       // Number of NFTs minted so far
-        base_name: string::String,    // Base name for the NFTs
-        base_url: string::String,     // Base URL for the NFTs
-        base_image_url: string::String, // Base image URL for the NFTs
-        description: string::String,  // Description of the NFTs
-        balance: Balance<SUI>,   // Balance for storing funds from NFT upgrades
-        pool: Balance<SITY>,   // Balance for storing funds from NFT upgrades
+        cost_multiplier: u64,                      
+        base_name: string::String,    
+        base_url: string::String,    
+        base_image_url: string::String, 
+        description: string::String,  
+        balance: Balance<SUI>,   
+        pool: Balance<SITY>,   
         publisher: address,      // Address of the publisher
         accumulation_speeds: vector<u64>,   // Store accumulation speeds
-        sui_costs: vector<vector<u64>>,     // SUI costs for each building level
-        sity_costs: vector<vector<u64>>,  
+        building_sui_costs: vector<vector<u64>>,     // SUI costs for each building level
+        building_sity_costs: vector<vector<u64>>,  
         factory_bonuses: vector<u64>,
         minted_users: Table<address, MintedByUser>,  // Using Table for efficient lookups
-
         public_key: vector<u8>, // Public key for verifying backend-signed messages
         ref_reward: u64,
+
+        extra_sui_costs: vector<u64>, // 0: for name change
+        extra_sity_costs: vector<u64>, // 0: for name change
         
 
     }
@@ -240,15 +234,15 @@ public entry fun claim_sity(nft: &mut City,game : &mut GameData, clock: &sui::cl
   ) {
       // Step 1: Verify the signatu
       let is_valid_signature = ed25519::ed25519_verify(&sig, &game.public_key, &msg);
-      assert!(is_valid_signature, 31); // Signature must be valid
+      assert!(is_valid_signature, EInvalidSignature); // Signature must be valid
 
 
       // Step 2: Check the claim amount
-      assert!(amount > 0, 32); // Amount must be positive
+      assert!(amount > 0, EAmountShouldBePositive); // Amount must be positive
 
       // Step 3: Check the game pool's balance
       let pool_balance = balance::value(&game.pool);
-      assert!(pool_balance >= amount, 33); // Ensure the pool has enough SITY tokens
+      assert!(pool_balance >= amount, EInsufficientPool); // Ensure the pool has enough SITY tokens
 
       // Step 4: Take the claimed amount from the game pool
       let claimed_sity = coin::take(&mut game.pool, amount, ctx);
@@ -278,18 +272,18 @@ public entry fun claim_sity(nft: &mut City,game : &mut GameData, clock: &sui::cl
 
       let total_building_level = nft.buildings[0] + nft.buildings[1] + nft.buildings[2] + nft.buildings[3];
 
-      assert!(total_building_level >= 3, 35); // Total building level must be greater than or equal to 3
+      assert!(total_building_level >= 3, ENotEligibleForRef); // Total building level must be greater than or equal to 3
       
-      assert!(nft.ref_used == false, 34); // Reference must not be used
+      assert!(nft.ref_used == false, ERefAlreadyUsed); // Reference must not be used
       
       let is_valid_signature = ed25519::ed25519_verify(&sig, &game.public_key, &msg);
-      assert!(is_valid_signature, 31); // Signature must be valid
+      assert!(is_valid_signature, EInvalidSignature); // Signature must be valid
 
       let amount = game.ref_reward;
 
       // Step 3: Check the game pool's balance
       let pool_balance = balance::value(&game.pool);
-      assert!(pool_balance >= (2*amount), 33); // Ensure the pool has enough SITY tokens
+      assert!(pool_balance >= (2*amount), EInsufficientPool); // Ensure the pool has enough SITY tokens
 
       // Step 4: Take the claimed amount from the game pool
       let claimed_sity = coin::take(&mut game.pool, amount, ctx);
@@ -327,14 +321,12 @@ public entry fun build_city(
             assert!(false, EAlreadyMinted);  // User has already minted, throw error
         };
 
-        // Construct the NFT name: [base_name] + " #" + mint number
         let mut nft_name = game.base_name;
         string::append(&mut nft_name, string::utf8(vector::singleton(32))); // Add a space (' ')
         string::append(&mut nft_name, string::utf8(vector::singleton(35))); // Add a '#' character
         let mint_number_str = u64_to_string(game.minted + 1);
         string::append(&mut nft_name, mint_number_str);
 
-        // Construct the initial image URL: [base_image_url] + "0.png"
         let mut image_url = game.base_image_url;
         string::append(&mut image_url, string::utf8(vector::singleton(48))); // Add '0' character
         string::append(&mut image_url, string::utf8(vector::singleton(48))); // Add '0' character
@@ -350,9 +342,7 @@ public entry fun build_city(
         string::append(&mut image_url, string::utf8(png_extension));
 
 
-        let reward_amount = 100000; // 100 $SITY tokens
-        let reward = coin::take(&mut game.pool, reward_amount, ctx); // Take 100 SITY tokens
-        let sity_balance = coin::into_balance(reward); // Convert the taken reward into a balance
+
 
         // Add the sender to the minted_users table
         let minted_user = MintedByUser { user_minted: true };
@@ -364,13 +354,12 @@ public entry fun build_city(
     // Create the NFT
     let nft = City {
         id: object::new(ctx),
+        index: game.minted + 1,
         name: nft_name,
         description: game.description, // Directly use the description
         url: url::new_unsafe_from_bytes(string::into_bytes(image_url)),
-        balance: sity_balance,
-        buildings: vector[0,0,0,0],  // Store the Table in the City struct
-
-        
+        balance: balance::zero(),
+        buildings: vector[0,0,0,0,0,0,0,0],  // 0: office, 1: factory 2: house 3: entertainment, others are undefined at the moment
 
         last_claimed: sui::clock::timestamp_ms(clock),
         last_daily_bonus: sui::clock::timestamp_ms(clock) - (24 * 3600 * 1000), // Set to 24 hours ago
@@ -446,7 +435,7 @@ public entry fun build_city(
 
         let index = building_type as u64;
         // Fetch the correct SUI cost for the building and level from GameData
-        let sui_cost = game.sui_costs[index][current_level] * game.cost_multiplier;
+        let sui_cost = game.building_sui_costs[index][current_level] * game.cost_multiplier;
         let adjusted_sui_cost = sui_cost / 100;
         assert!(sui_cost!=0, EInvalidTokenType);
 
@@ -501,7 +490,7 @@ public entry fun build_city(
 
 
         // Fetch the correct SITY cost for the building and level from GameData
-        let sity_cost = game.sity_costs[index][current_level]* game.cost_multiplier;
+        let sity_cost = game.building_sity_costs[index][current_level]* game.cost_multiplier;
         assert!(sity_cost!=0,EInvalidTokenType);
 
         let adjusted_sity_cost = sity_cost / 100;
@@ -537,11 +526,56 @@ public entry fun build_city(
         });
         
 }
+ public entry fun change_name_with_sui(nft: &mut City,
+        game: &mut GameData,sui: Coin<SUI>, 
+        new_name : string::String,
+        _ctx: &mut TxContext){
+
+        let sui_cost = game.extra_sui_costs[0] * game.cost_multiplier;
+        let adjusted_sui_cost = sui_cost / 100; // since multiplier is not divided by 100
+        assert!(sui_cost!=0, EInvalidTokenType);
+
+        // Check that the passed SUI amount matches the required cost
+        let sui_value = coin::value(&sui);
+        assert!(sui_value >= adjusted_sui_cost, EInsufficientBalance); // Ensure the correct SUI amount is passed
+
+        // Add the SUI coin to the game balance
+        balance::join(&mut game.balance, coin::into_balance(sui));
+
+        nft.name = new_name;
+
+        }
+
+
+         public entry fun change_name_with_sity(nft: &mut City,
+        game: &mut GameData,sui: Coin<SUI>, 
+        sig: vector<u8>,          // Signature from the backend
+        msg: vector<u8>,      // Signed message containing the user's wallet address and amount
+        _ctx: &mut TxContext){
+
+        let is_valid_signature = ed25519::ed25519_verify(&sig, &game.public_key, &msg);
+        assert!(is_valid_signature, EInvalidSignature); // Signature must be valid
+
+        let sui_cost = game.extra_sity_costs[0] * game.cost_multiplier;
+        let adjusted_sui_cost = sui_cost / 100; // since multiplier is not divided by 100
+        assert!(sui_cost!=0, EInvalidTokenType);
+
+        // Check that the passed SUI amount matches the required cost
+        let sui_value = coin::value(&sui);
+        assert!(sui_value >= adjusted_sui_cost, EInsufficientBalance); // Ensure the correct SUI amount is passed
+
+        // Add the SUI coin to the game balance
+        balance::join(&mut game.balance, coin::into_balance(sui));
+
+        nft.name = msg.to_string();
+
+        }
+   
 
 
     /// Permanently delete `nft`
     public entry fun burn(nft: City, _: &mut TxContext) {
-        let City { id, name: _, description: _, url: _, balance:bal,buildings: _, last_claimed: _, last_daily_bonus:_, last_accumulated: _, population : _, ref_used: _} = nft;
+        let City { id, index:_, name: _, description: _, url: _, balance:bal,buildings: _, last_claimed: _, last_daily_bonus:_, last_accumulated: _, population : _, ref_used: _} = nft;
         balance::destroy_zero(bal);
         id.delete()
         }
@@ -575,43 +609,47 @@ public entry fun build_city(
 
         let accumulation_speeds = vector[100000, 180000, 310000, 550000, 960000, 1700000, 3000000, 5125000];
 
-        let sui_costs = vector[
-        vector[1000000000, 0, 5000000000, 0, 25000000000, 0, 100000000000],         // SUI costs for Residential Office / House
-        vector[0, 2250000000, 0, 12000000000, 0, 50000000000, 0], // SUI costs for Factory / Entertainment Complex
-        vector[1000000000, 0, 5000000000, 0, 25000000000, 0, 100000000000],         // SUI costs for House (same as Residential Office)
-        vector[0, 2250000000, 0, 12000000000, 0, 50000000000, 0] // SUI costs for Entertainment Complex (same as Factory)
+        let building_sui_costs = vector[
+        vector[800000000, 0, 4000000000, 0, 20000000000, 0, 75000000000],         // SUI costs for Residential Office / House
+        vector[0, 0, 0, 9500000000, 0, 35000000000, 0], // SUI costs for Factory 
+        vector[800000000, 0, 4000000000, 0, 20000000000, 0, 75000000000],         // SUI costs for Residential Office / House
+        vector[0, 1800000000, 0, 9500000000, 0, 35000000000, 0] // SUI costs for Entertainment Complex (same as Factory)
         ];
 
-        let sity_costs = vector[
-        vector[0, 240000, 0, 1280000, 0, 5120000, 0],         // SITY costs for Residential Office / House
-        vector[80000, 0, 640000, 0, 2560000, 0, 10240000],       // SITY costs for Factory / Entertainment Complex
-        vector[0, 240000, 0, 1280000, 0, 5120000, 0],         // SITY costs for House (same as Residential Office)
-        vector[80000, 0, 64000, 0, 2560000, 0, 10240000]       // SITY costs for Entertainment Complex (same as Factory)
+        let building_sity_costs = vector[
+        vector[0, 620000, 0, 2900000, 0, 9400000, 0],         // SITY costs for Residential Office / House
+        vector[200000, 620000, 1400000, 0, 6200000, 0, 20000000],       // SITY costs for Factory / Entertainment Complex
+        vector[0, 620000, 0, 2900000, 0, 9400000, 0],         // SITY costs for Residential Office / House
+        vector[200000, 0, 1400000, 0, 6200000, 0, 20000000]       // SITY costs for Entertainment Complex (same as Factory)
 
         ];
+
+        let extra_sity_costs = vector[1000000];
+        let extra_sui_costs = vector[10000000000];
 
         let factory_bonuses = vector[30,55,80,105,130,150,170,200];
         let minted_users = table::new(ctx);  // Initialize the table
 
-        // Initialize GameData with default values
         let game_data = GameData {
             id: object::new(ctx),         
-            version:VERSION,             // Initialize a new UID for this game data
+            version:VERSION,             
             minted: 0,  
-            speed: 1, //50x
-            cost_multiplier:1 , //0.01x                              
-            base_name: string::utf8(b"SuiCity Test v1.3"),   // Default base name for NFTs
+            speed: 1, 
+            cost_multiplier:1 ,                            
+            base_name: string::utf8(b"SuiCity"),   // Default base name for NFTs
             base_url: string::utf8(b"https://suicityp2e.com"), // Default base URL
             base_image_url: string::utf8(b"https://bafybeifbd7bkfgj2urg43i2qwkbsc6pmh3v6cllifxw6z2xiqzfgkryhd4.ipfs.w3s.link/"), // Default image URL
             description: string::utf8(b"FreeMint your SuiCity and start building & earning your $SITY 🏙️ The first onchain Play2Airdrop game which powered by dNFTs"), // Default description
-            balance: balance::zero(),                  // Initialize balance to zero
-            pool: balance::zero(),                  // Initialize balance to zero
+            balance: balance::zero(),                  
+            pool: balance::zero(),                  
             publisher: publisher_address,    
             accumulation_speeds    ,
-            sui_costs: sui_costs,     // SUI costs for each building level
-            sity_costs: sity_costs, 
+            building_sui_costs: building_sui_costs,     
+            building_sity_costs: building_sity_costs, 
+            extra_sui_costs: extra_sui_costs,
+            extra_sity_costs: extra_sity_costs,
             factory_bonuses: factory_bonuses,
-            minted_users: minted_users,  // Initialize the table              
+            minted_users: minted_users,               
             public_key : x"5A567940437464FF7E491ACB6DC17595ADA001A1241FC34A3620F9DF2382D2E2",
             ref_reward: 500000,
         };
@@ -665,7 +703,7 @@ public entry fun build_city(
         assert!(tx_context::sender(ctx) == game.publisher, ENotPublisher);
 
         // Mint a large amount of SITY tokens for the game pool (e.g., 1,000,000 SITY tokens)
-        let minted_sity = sity::create( treasury_cap, 1000000000000, ctx); // Mint 1,000,000 SITY
+        let minted_sity = sity::create( treasury_cap, 10000000000, ctx); // Mint 1,000,000 SITY
         let sity_balance = coin::into_balance(minted_sity); // Convert minted coins into balance
         balance::join(&mut game.pool, sity_balance);
 
@@ -690,24 +728,41 @@ public entry fun build_city(
         new_speed: u64,
         new_cost_multiplier: u64,
         new_accumulation_speeds: vector<u64>,
-        new_sui_costs: vector<vector<u64>>,
-        new_sity_costs: vector<vector<u64>>,
+        new_building_sui_costs: vector<vector<u64>>,
+        new_building_sity_costs: vector<vector<u64>>,
         new_factory_bonuses: vector<u64>,
+        new_ref_reward: u64,
+        new_extra_sui_costs: vector<u64>,
+        new_extra_sity_costs: vector<u64>,
         ctx: &mut TxContext
     ) {
         assert!(tx_context::sender(ctx) == game.publisher, ENotPublisher); // Only the publisher can modify
         game.accumulation_speeds = new_accumulation_speeds;
         game.speed = new_speed;
         game.cost_multiplier = new_cost_multiplier;
-        game.sui_costs = new_sui_costs;
-        game.sity_costs = new_sity_costs;
+        game.building_sui_costs = new_building_sui_costs;
+        game.building_sity_costs = new_building_sity_costs;
         game.factory_bonuses = new_factory_bonuses;
+        game.ref_reward = new_ref_reward;
+        game.extra_sui_costs = new_extra_sui_costs;
+        game.extra_sity_costs = new_extra_sity_costs;
     }
 
     entry fun migrate(game: &mut GameData, ctx: & TxContext) {
         assert!(tx_context::sender(ctx) == game.publisher, ENotPublisher); // Only the publisher can modify
         assert!(game.version < VERSION, ENotUpgrade);
         game.version = VERSION;
+    }
+
+    public fun modify_cost_multiplier(
+                game: &mut GameData,
+            new_cost_multiplier: u64,
+            ctx: &mut TxContext
+
+    ){
+                assert!(tx_context::sender(ctx) == game.publisher, ENotPublisher); // Only the publisher can modify
+                game.cost_multiplier = new_cost_multiplier;
+
     }
 
 
@@ -798,7 +853,7 @@ module suicity::sity {
     public struct SITY has drop {}
 
     fun init(witness: SITY, ctx: &mut TxContext) {
-        let (treasury, metadata) = coin::create_currency(witness, 3, b"SITY TEST v1.3", b"SITY TEST v1.3", b"BUIDL YOUR SITY", option::some(url::new_unsafe_from_bytes(b"https://bafybeig4236djyafwvxzkb3km7o3xa25lsfg55bxvyrwbxyemlzjnjjpsi.ipfs.w3s.link/sity%20logo.png")), ctx);
+        let (treasury, metadata) = coin::create_currency(witness, 3, b"SITY", b"SITY", b"Native token of @SuiCityP2E", option::some(url::new_unsafe_from_bytes(b"https://bafybeig4236djyafwvxzkb3km7o3xa25lsfg55bxvyrwbxyemlzjnjjpsi.ipfs.w3s.link/sity%20logo.png")), ctx);
         transfer::public_freeze_object(metadata);
         transfer::public_transfer(treasury, ctx.sender())
     }
